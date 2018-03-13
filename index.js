@@ -1,8 +1,11 @@
-const {template} = require('lodash');
+const {isPlainObject} = require('lodash');
 const marked = require('marked');
 const TerminalRenderer = require('marked-terminal');
 const envCi = require('env-ci');
 const hookStd = require('hook-std');
+const pEachSeries = require('p-each-series');
+const semver = require('semver');
+const AggregateError = require('aggregate-error');
 const pkg = require('./package.json');
 const hideSensitive = require('./lib/hide-sensitive');
 const getConfig = require('./lib/get-config');
@@ -10,17 +13,18 @@ const verify = require('./lib/verify');
 const getNextVersion = require('./lib/get-next-version');
 const getCommits = require('./lib/get-commits');
 const getLastRelease = require('./lib/get-last-release');
-const {extractErrors} = require('./lib/utils');
+const getReleasesToAdd = require('./lib/get-releases-to-add');
+const {extractErrors, makeTag} = require('./lib/utils');
 const getGitAuthUrl = require('./lib/get-git-auth-url');
 const logger = require('./lib/logger');
-const {fetch, verifyAuth, isBranchUpToDate, gitHead: getGitHead, tag, push} = require('./lib/git');
+const {verifyAuth, isBranchUpToDate, gitHead: getGitHead, tag, push} = require('./lib/git');
 const getError = require('./lib/get-error');
 const {COMMIT_NAME, COMMIT_EMAIL} = require('./lib/definitions/constants');
 
 marked.setOptions({renderer: new TerminalRenderer()});
 
 async function run(options, plugins) {
-  const {isCi, branch, isPr} = envCi();
+  const {isCi, branch: ciBranch, isPr} = envCi();
 
   if (!isCi && !options.dryRun && !options.noCi) {
     logger.log('This run was not triggered in a known CI environment, running in dry-run mode.');
@@ -43,21 +47,24 @@ async function run(options, plugins) {
     return;
   }
 
-  if (branch !== options.branch) {
+  // Verify config
+  await verify(options);
+
+  const branch = options.branches.find(({name}) => name === ciBranch);
+
+  if (!branch) {
     logger.log(
-      `This test run was triggered on the branch ${branch}, while semantic-release is configured to only publish from ${
-        options.branch
-      }, therefore a new version won’t be published.`
+      `This test run was triggered on the branch ${ciBranch}, while semantic-release is configured to only publish from ${options.branches
+        .map(({name}) => name)
+        .join(', ')}, therefore a new version won’t be published.`
     );
     return false;
   }
 
-  await verify(options);
-
   options.repositoryUrl = await getGitAuthUrl(options);
 
   try {
-    await verifyAuth(options.repositoryUrl, options.branch);
+    await verifyAuth(options.repositoryUrl, branch.name);
   } catch (err) {
     if (!(await isBranchUpToDate(options.branch))) {
       logger.log(
@@ -70,26 +77,70 @@ async function run(options, plugins) {
     throw getError('EGITNOPERMISSION', {options});
   }
 
-  logger.log('Run automated release from branch %s', options.branch);
+  logger.log('Run automated release from branch %s', ciBranch);
 
-  await plugins.verifyConditions({options, logger});
+  await plugins.verifyConditions({options, branch, logger});
 
-  await fetch(options.repositoryUrl);
+  const releasesToAdd = getReleasesToAdd(branch, options, logger);
+  const errors = [];
 
-  const lastRelease = await getLastRelease(options.tagFormat, logger);
-  const commits = await getCommits(lastRelease.gitHead, options.branch, logger);
+  await pEachSeries(releasesToAdd, async ({lastRelease, currentRelease, nextRelease}) => {
+    if (branch['merge-range'] && !semver.satisfies(nextRelease.version, branch['merge-range'])) {
+      errors.push(getError('EINVALIDLTSMERGE', {nextRelease, branch}));
+      return;
+    }
 
-  const type = await plugins.analyzeCommits({options, logger, lastRelease, commits});
+    const commits = await getCommits(lastRelease.gitHead, nextRelease.gitHead, branch.name, logger);
+    nextRelease.notes = await plugins.generateNotes({options, logger, branch, lastRelease, commits, nextRelease});
+
+    logger.log('Create tag %s', nextRelease.gitTag);
+    await tag(nextRelease.gitTag, nextRelease.gitHead);
+    await push(options.repositoryUrl, branch.name);
+
+    await plugins.success({
+      options,
+      logger,
+      branch,
+      lastRelease,
+      commits,
+      nextRelease,
+      releases: await plugins.addChannel({options, logger, branch, lastRelease, commits, currentRelease, nextRelease}),
+    });
+  });
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors);
+  }
+
+  const lastRelease = getLastRelease(branch, options, logger);
+
+  const {channel} = branch;
+  const commits = await getCommits(lastRelease.gitHead, 'HEAD', branch.name, logger);
+
+  const type = await plugins.analyzeCommits({options, branch, lastRelease, commits, logger});
   if (!type) {
     logger.log('There are no relevant changes, so no new version is released.');
     return;
   }
-  const version = getNextVersion(type, lastRelease, logger);
-  const nextRelease = {type, version, gitHead: await getGitHead(), gitTag: template(options.tagFormat)({version})};
 
-  await plugins.verifyRelease({options, logger, lastRelease, commits, nextRelease});
+  const version = getNextVersion(branch, type, lastRelease, logger);
 
-  const generateNotesParam = {options, logger, lastRelease, commits, nextRelease};
+  if (!semver.satisfies(version, branch.range)) {
+    throw getError('EINVALIDNEXTVERSION', {version, branch});
+  }
+
+  const nextRelease = {
+    type,
+    version,
+    channel,
+    gitHead: await getGitHead(),
+    gitTag: makeTag(options.tagFormat, version, channel),
+    name: makeTag(options.tagFormat, version),
+  };
+
+  await plugins.verifyRelease({options, logger, branch, lastRelease, commits, nextRelease});
+
+  const generateNotesParam = {options, branch, lastRelease, commits, nextRelease, logger};
 
   if (options.dryRun) {
     const notes = await plugins.generateNotes(generateNotesParam);
@@ -97,18 +148,18 @@ async function run(options, plugins) {
     process.stdout.write(`${marked(notes)}\n`);
   } else {
     nextRelease.notes = await plugins.generateNotes(generateNotesParam);
-    await plugins.prepare({options, logger, lastRelease, commits, nextRelease});
+    await plugins.prepare({options, branch, lastRelease, commits, nextRelease, logger});
 
     // Create the tag before calling the publish plugins as some require the tag to exists
     logger.log('Create tag %s', nextRelease.gitTag);
     await tag(nextRelease.gitTag);
-    await push(options.repositoryUrl, branch);
+    await push(options.repositoryUrl, branch.name);
 
-    const releases = await plugins.publish({options, logger, lastRelease, commits, nextRelease});
-
-    await plugins.success({options, logger, lastRelease, commits, nextRelease, releases});
+    const releases = await plugins.publish({options, branch, lastRelease, commits, nextRelease, logger});
 
     logger.log('Published release: %s', nextRelease.version);
+
+    await plugins.success({options, branch, lastRelease, commits, nextRelease, releases, logger});
   }
   return true;
 }

@@ -68,6 +68,17 @@ test('The "publish" plugin is mandatory, and must be a single or an array of plu
   t.true(plugins.publish.configValidator([{path: 'plugin-path.js'}, 'plugin-path.js', () => {}]));
 });
 
+test('The "addChannel" plugin, if defined, must be a single or an array of plugins definition', t => {
+  t.false(plugins.addChannel.configValidator({}));
+  t.false(plugins.addChannel.configValidator({path: null}));
+
+  t.true(plugins.addChannel.configValidator({path: 'plugin-path.js'}));
+  t.true(plugins.addChannel.configValidator());
+  t.true(plugins.addChannel.configValidator('plugin-path.js'));
+  t.true(plugins.addChannel.configValidator(() => {}));
+  t.true(plugins.addChannel.configValidator([{path: 'plugin-path.js'}, 'plugin-path.js', () => {}]));
+});
+
 test('The "success" plugin, if defined, must be a single or an array of plugins definition', t => {
   t.false(plugins.success.configValidator({}));
   t.false(plugins.success.configValidator({path: null}));
@@ -118,6 +129,16 @@ test('The "publish" plugin output, if defined, must be an object', t => {
   t.true(plugins.publish.outputValidator());
   t.true(plugins.publish.outputValidator(null));
   t.true(plugins.publish.outputValidator(''));
+});
+
+test('The "addChannel" plugin output, if defined, must be an object', t => {
+  t.false(plugins.addChannel.outputValidator(1));
+  t.false(plugins.addChannel.outputValidator('string'));
+
+  t.true(plugins.addChannel.outputValidator({}));
+  t.true(plugins.addChannel.outputValidator());
+  t.true(plugins.addChannel.outputValidator(null));
+  t.true(plugins.addChannel.outputValidator(''));
 });
 
 test('The "generateNotes" plugins output are concatenated with separator', t => {
