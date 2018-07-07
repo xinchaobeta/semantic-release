@@ -1,4 +1,4 @@
-const {template, isPlainObject, castArray} = require('lodash');
+const {template, isPlainObject} = require('lodash');
 const marked = require('marked');
 const TerminalRenderer = require('marked-terminal');
 const envCi = require('env-ci');
@@ -81,7 +81,7 @@ async function run(options, plugins) {
   const commits = await getCommits(lastRelease.gitHead, options.branch, logger);
 
   logger.log('Call plugin %s', 'analyze-commits');
-  const type = await plugins.analyzeCommits({
+  const [type] = await plugins.analyzeCommits({
     options,
     logger,
     lastRelease,
@@ -101,12 +101,12 @@ async function run(options, plugins) {
 
   if (options.dryRun) {
     logger.log('Call plugin %s', 'generate-notes');
-    const notes = await plugins.generateNotes(generateNotesParam);
+    const [notes] = await plugins.generateNotes(generateNotesParam);
     logger.log('Release note for version %s:\n', nextRelease.version);
     process.stdout.write(`${marked(notes)}\n`);
   } else {
     logger.log('Call plugin %s', 'generateNotes');
-    nextRelease.notes = await plugins.generateNotes(generateNotesParam);
+    [nextRelease.notes] = await plugins.generateNotes(generateNotesParam);
 
     logger.log('Call plugin %s', 'prepare');
     await plugins.prepare(
@@ -119,7 +119,7 @@ async function run(options, plugins) {
             nextRelease.gitHead = newGitHead;
             // Regenerate the release notes
             logger.log('Call plugin %s', 'generateNotes');
-            nextRelease.notes = await plugins.generateNotes(generateNotesParam);
+            [nextRelease.notes] = await plugins.generateNotes(generateNotesParam);
           }
           // Call the next publish plugin with the updated `nextRelease`
           return {options, logger, lastRelease, commits, nextRelease};
@@ -139,10 +139,7 @@ async function run(options, plugins) {
       {transform: (release, step) => ({...(isPlainObject(release) ? release : {}), ...nextRelease, ...step})}
     );
 
-    await plugins.success(
-      {options, logger, lastRelease, commits, nextRelease, releases: castArray(releases)},
-      {settleAll: true}
-    );
+    await plugins.success({options, logger, lastRelease, commits, nextRelease, releases}, {settleAll: true});
 
     logger.log('Published release: %s', nextRelease.version);
   }
