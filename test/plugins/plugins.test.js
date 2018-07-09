@@ -56,17 +56,17 @@ test('Export plugins based on config', t => {
   t.is(typeof plugins.fail, 'function');
 });
 
-test.serial('Export plugins loaded from the dependency of a shareable config module', async t => {
-  const temp = tempy.directory();
+test('Export plugins loaded from the dependency of a shareable config module', async t => {
+  const cwd = tempy.directory();
   await copy(
     './test/fixtures/plugin-noop.js',
-    path.join(temp, 'node_modules/shareable-config/node_modules/custom-plugin/index.js')
+    path.resolve(cwd, 'node_modules/shareable-config/node_modules/custom-plugin/index.js')
   );
-  await outputFile(path.join(temp, 'node_modules/shareable-config/index.js'), '');
-  process.chdir(temp);
+  await outputFile(path.resolve(cwd, 'node_modules/shareable-config/index.js'), '');
 
   const plugins = getPlugins(
     {
+      cwd,
       verifyConditions: ['custom-plugin', {path: 'custom-plugin'}],
       generateNotes: 'custom-plugin',
       analyzeCommits: {path: 'custom-plugin'},
@@ -87,14 +87,14 @@ test.serial('Export plugins loaded from the dependency of a shareable config mod
   t.is(typeof plugins.fail, 'function');
 });
 
-test.serial('Export plugins loaded from the dependency of a shareable config file', async t => {
-  const temp = tempy.directory();
-  await copy('./test/fixtures/plugin-noop.js', path.join(temp, 'plugin/plugin-noop.js'));
-  await outputFile(path.join(temp, 'shareable-config.js'), '');
-  process.chdir(temp);
+test('Export plugins loaded from the dependency of a shareable config file', async t => {
+  const cwd = tempy.directory();
+  await copy('./test/fixtures/plugin-noop.js', path.resolve(cwd, 'plugin/plugin-noop.js'));
+  await outputFile(path.resolve(cwd, 'shareable-config.js'), '');
 
   const plugins = getPlugins(
     {
+      cwd,
       verifyConditions: ['./plugin/plugin-noop', {path: './plugin/plugin-noop'}],
       generateNotes: './plugin/plugin-noop',
       analyzeCommits: {path: './plugin/plugin-noop'},

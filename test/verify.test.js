@@ -3,31 +3,10 @@ import tempy from 'tempy';
 import verify from '../lib/verify';
 import {gitRepo} from './helpers/git-utils';
 
-// Save the current process.env
-const envBackup = Object.assign({}, process.env);
-// Save the current working diretory
-const cwd = process.cwd();
+test('Throw a AggregateError', async t => {
+  const {cwd} = await gitRepo();
 
-test.beforeEach(() => {
-  // Delete environment variables that could have been set on the machine running the tests
-  delete process.env.GIT_CREDENTIALS;
-  delete process.env.GH_TOKEN;
-  delete process.env.GITHUB_TOKEN;
-  delete process.env.GL_TOKEN;
-  delete process.env.GITLAB_TOKEN;
-});
-
-test.afterEach.always(() => {
-  // Restore process.env
-  process.env = envBackup;
-  // Restore the current working directory
-  process.chdir(cwd);
-});
-
-test.serial('Throw a AggregateError', async t => {
-  await gitRepo();
-
-  const errors = [...(await t.throws(verify({})))];
+  const errors = [...(await t.throws(verify({cwd})))];
 
   t.is(errors[0].name, 'SemanticReleaseError');
   t.is(errors[0].code, 'ENOREPOURL');
@@ -37,19 +16,18 @@ test.serial('Throw a AggregateError', async t => {
   t.is(errors[2].code, 'ETAGNOVERSION');
 });
 
-test.serial('Throw a SemanticReleaseError if does not run on a git repository', async t => {
-  const dir = tempy.directory();
-  process.chdir(dir);
+test('Throw a SemanticReleaseError if does not run on a git repository', async t => {
+  const cwd = tempy.directory();
 
-  const errors = [...(await t.throws(verify({})))];
+  const errors = [...(await t.throws(verify({cwd})))];
 
   t.is(errors[0].name, 'SemanticReleaseError');
   t.is(errors[0].code, 'ENOGITREPO');
 });
 
-test.serial('Throw a SemanticReleaseError if the "tagFormat" is not valid', async t => {
-  const repositoryUrl = await gitRepo(true);
-  const options = {repositoryUrl, tagFormat: `?\${version}`};
+test('Throw a SemanticReleaseError if the "tagFormat" is not valid', async t => {
+  const {cwd, repositoryUrl} = await gitRepo(true);
+  const options = {repositoryUrl, tagFormat: `?\${version}`, cwd};
 
   const errors = [...(await t.throws(verify(options, 'master', t.context.logger)))];
 
@@ -57,9 +35,9 @@ test.serial('Throw a SemanticReleaseError if the "tagFormat" is not valid', asyn
   t.is(errors[0].code, 'EINVALIDTAGFORMAT');
 });
 
-test.serial('Throw a SemanticReleaseError if the "tagFormat" does not contains the "version" variable', async t => {
-  const repositoryUrl = await gitRepo(true);
-  const options = {repositoryUrl, tagFormat: 'test'};
+test('Throw a SemanticReleaseError if the "tagFormat" does not contains the "version" variable', async t => {
+  const {cwd, repositoryUrl} = await gitRepo(true);
+  const options = {repositoryUrl, tagFormat: 'test', cwd};
 
   const errors = [...(await t.throws(verify(options, 'master', t.context.logger)))];
 
@@ -67,9 +45,9 @@ test.serial('Throw a SemanticReleaseError if the "tagFormat" does not contains t
   t.is(errors[0].code, 'ETAGNOVERSION');
 });
 
-test.serial('Throw a SemanticReleaseError if the "tagFormat" contains multiple "version" variables', async t => {
-  const repositoryUrl = await gitRepo(true);
-  const options = {repositoryUrl, tagFormat: `\${version}v\${version}`};
+test('Throw a SemanticReleaseError if the "tagFormat" contains multiple "version" variables', async t => {
+  const {cwd, repositoryUrl} = await gitRepo(true);
+  const options = {repositoryUrl, tagFormat: `\${version}v\${version}`, cwd};
 
   const errors = [...(await t.throws(verify(options)))];
 
@@ -77,9 +55,9 @@ test.serial('Throw a SemanticReleaseError if the "tagFormat" contains multiple "
   t.is(errors[0].code, 'ETAGNOVERSION');
 });
 
-test.serial('Return "true" if all verification pass', async t => {
-  const repositoryUrl = await gitRepo(true);
-  const options = {repositoryUrl, tagFormat: `v\${version}`, branch: 'master'};
+test('Return "true" if all verification pass', async t => {
+  const {cwd, repositoryUrl} = await gitRepo(true);
+  const options = {repositoryUrl, tagFormat: `v\${version}`, cwd};
 
   await t.notThrows(verify(options));
 });

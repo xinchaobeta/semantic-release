@@ -19,7 +19,7 @@ const {COMMIT_NAME, COMMIT_EMAIL} = require('./lib/definitions/constants');
 
 marked.setOptions({renderer: new TerminalRenderer()});
 
-async function run(options, plugins) {
+async function run(options, plugins, env) {
   const {isCi, branch, isPr} = envCi();
 
   if (!isCi && !options.dryRun && !options.noCi) {
@@ -27,15 +27,14 @@ async function run(options, plugins) {
     options.dryRun = true;
   } else {
     // When running on CI, set the commits author and commiter info and prevent the `git` CLI to prompt for username/password. See #703.
-    process.env = {
+    Object.assign(env, {
       GIT_AUTHOR_NAME: COMMIT_NAME,
       GIT_AUTHOR_EMAIL: COMMIT_EMAIL,
       GIT_COMMITTER_NAME: COMMIT_NAME,
       GIT_COMMITTER_EMAIL: COMMIT_EMAIL,
-      ...process.env,
       GIT_ASKPASS: 'echo',
       GIT_TERMINAL_PROMPT: 0,
-    };
+    });
   }
 
   if (isCi && isPr && !options.noCi) {
@@ -54,12 +53,12 @@ async function run(options, plugins) {
 
   await verify(options);
 
-  options.repositoryUrl = await getGitAuthUrl(options);
+  options.repositoryUrl = await getGitAuthUrl(options, env);
 
   try {
-    await verifyAuth(options.repositoryUrl, options.branch);
+    await verifyAuth(options.repositoryUrl, options.branch, {cwd: options.cwd});
   } catch (err) {
-    if (!(await isBranchUpToDate(options.repositoryUrl, options.branch))) {
+    if (!(await isBranchUpToDate(options.repositoryUrl, options.branch, {cwd: options.cwd}))) {
       logger.log(
         "The local branch %s is behind the remote one, therefore a new version won't be published.",
         options.branch
@@ -75,10 +74,10 @@ async function run(options, plugins) {
   logger.log('Call plugin %s', 'verify-conditions');
   await plugins.verifyConditions({options, logger}, {settleAll: true});
 
-  await fetch(options.repositoryUrl);
+  await fetch(options.repositoryUrl, {cwd: options.cwd});
 
-  const lastRelease = await getLastRelease(options.tagFormat, logger);
-  const commits = await getCommits(lastRelease.gitHead, options.branch, logger);
+  const lastRelease = await getLastRelease(options, logger);
+  const commits = await getCommits(lastRelease.gitHead, options.branch, logger, {cwd: options.cwd});
 
   logger.log('Call plugin %s', 'analyze-commits');
   const type = await plugins.analyzeCommits({
@@ -92,7 +91,12 @@ async function run(options, plugins) {
     return;
   }
   const version = getNextVersion(type, lastRelease, logger);
-  const nextRelease = {type, version, gitHead: await getGitHead(), gitTag: template(options.tagFormat)({version})};
+  const nextRelease = {
+    type,
+    version,
+    gitHead: await getGitHead({cwd: options.cwd}),
+    gitTag: template(options.tagFormat)({version}),
+  };
 
   logger.log('Call plugin %s', 'verify-release');
   await plugins.verifyRelease({options, logger, lastRelease, commits, nextRelease}, {settleAll: true});
@@ -113,7 +117,7 @@ async function run(options, plugins) {
       {options, logger, lastRelease, commits, nextRelease},
       {
         getNextInput: async lastResult => {
-          const newGitHead = await getGitHead();
+          const newGitHead = await getGitHead({cwd: options.cwd});
           // If previous prepare plugin has created a commit (gitHead changed)
           if (lastResult.nextRelease.gitHead !== newGitHead) {
             nextRelease.gitHead = newGitHead;
@@ -129,8 +133,8 @@ async function run(options, plugins) {
 
     // Create the tag before calling the publish plugins as some require the tag to exists
     logger.log('Create tag %s', nextRelease.gitTag);
-    await tag(nextRelease.gitTag);
-    await push(options.repositoryUrl, branch);
+    await tag(nextRelease.gitTag, {cwd: options.cwd});
+    await push(options.repositoryUrl, branch, {cwd: options.cwd});
 
     logger.log('Call plugin %s', 'publish');
     const releases = await plugins.publish(
@@ -174,14 +178,13 @@ async function callFail(plugins, options, error) {
   }
 }
 
-module.exports = async opts => {
+module.exports = async (opts, env = process.env) => {
   logger.log(`Running %s version %s`, pkg.name, pkg.version);
-  const {unhook} = hookStd({silent: false}, hideSensitive);
+  const {unhook} = hookStd({silent: false}, hideSensitive(env));
   try {
-    const config = await getConfig(opts, logger);
-    const {plugins, options} = config;
+    const {plugins, options} = await getConfig(opts, logger);
     try {
-      const result = await run(options, plugins);
+      const result = await run(options, plugins, env);
       unhook();
       return result;
     } catch (err) {
